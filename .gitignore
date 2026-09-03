@@ -4,5 +4,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .ruff_cache/
-evidence/
 readiness-report.json
+
+# evidence/ is deliberately NOT ignored: SUBMISSION.md items 1-2 require the
+# integration report and the ten evidence files to be handed in. They hold run
+# IDs, trace IDs and versions only - no credentials, no runtime databases.

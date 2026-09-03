@@ -70,14 +70,42 @@ static_resources:
                   address:
                     socket_address: {address: api, port_value: 8000}
       health_checks:
-        - timeout: 2s
+        # 2s was tuned for dependencies on the same docker network. /ready's
+        # vLLM leg can cross the public internet to a remote GPU endpoint
+        # (Kaggle/Colab via tunnel), and that round trip alone can exceed 2s
+        # under load - which made the active check time out and eject a pod
+        # that was, in fact, ready. 5s tolerates that hop without meaningfully
+        # slowing detection of a real outage: a local dependency answers in
+        # milliseconds either way.
+        - timeout: 5s
           interval: 2s
           unhealthy_threshold: 1
           healthy_threshold: 1
-          # Liveness decides whether Envoy can route. Application readiness is
-          # deliberately proxied so students can see the exact degraded
-          # dependency report instead of an opaque "no healthy upstream".
-          http_health_check: {path: /health}
+          # Active health-checks /ready, not /health. /health is liveness and
+          # never touches a dependency, so a dead Qdrant or Kafka would never
+          # eject this upstream and the gateway would keep routing traffic to
+          # a pod that cannot serve it - the exact failure IT-J4 checks for.
+          # /ready already returns 200 on "degraded" (an optional dependency
+          # down) and 503 only on "not_ready" (a mandatory one), so this
+          # matches the readinessProbe already used in
+          # deploy/kubernetes/base/api.yaml and only ejects on the failure
+          # that actually should take the pod out of rotation.
+          #
+          # Trade-off: once ejected, a caller hitting gateway:/ready gets
+          # Envoy's own opaque 503 instead of the app's degraded-reason JSON,
+          # because Envoy stops forwarding to an unhealthy upstream. That
+          # detail is still visible by calling the API container directly on
+          # :8000, or from the readiness gauges already on Grafana.
+          #
+          # The marker header lets the application tell this synthetic probe
+          # apart from real traffic. Without it every two seconds of health
+          # checking lands in lab28_requests_total{route="/ready"} and hides
+          # whether a client ever reached that route.
+          http_health_check:
+            path: /ready
+            request_headers_to_add:
+              - header: {key: x-lab28-synthetic-probe, value: gateway-health-check}
+                append_action: OVERWRITE_IF_EXISTS_OR_ADD
       common_lb_config:
         healthy_panic_threshold: {value: 0}
     - name: otel_collector
