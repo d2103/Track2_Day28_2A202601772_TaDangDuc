@@ -155,6 +155,20 @@ def _route_of(request: Request) -> str:
     return getattr(route, "path", request.url.path)
 
 
+#: Header the gateway stamps on its own cluster health check (see gateway/envoy.yaml).
+SYNTHETIC_PROBE_HEADER = "x-lab28-synthetic-probe"
+
+
+def _is_synthetic_probe(request: Request) -> bool:
+    """Whether this request is infrastructure polling rather than a client.
+
+    Envoy health-checks the cluster every two seconds. Counting those in the
+    golden signals inflates request rate, drags latency toward zero and makes
+    ``lab28_requests_total{route="/health"}`` say nothing about real callers.
+    """
+    return SYNTHETIC_PROBE_HEADER in request.headers
+
+
 def _derive_key(kind: str, entity_id: str, text: str) -> str:
     """Content-derived de-duplication key for a client that supplied none.
 
@@ -253,12 +267,13 @@ def _register_middleware(app: FastAPI) -> None:
         """
         started = time.perf_counter()
         response = await call_next(request)
-        route = _route_of(request)
-        status = str(response.status_code)
-        metrics.REQUEST_SECONDS.labels(route=route, status=status).observe(
-            time.perf_counter() - started
-        )
-        metrics.REQUESTS.labels(route=route, status=status).inc()
+        if not _is_synthetic_probe(request):
+            route = _route_of(request)
+            status = str(response.status_code)
+            metrics.REQUEST_SECONDS.labels(route=route, status=status).observe(
+                time.perf_counter() - started
+            )
+            metrics.REQUESTS.labels(route=route, status=status).inc()
 
         trace_id = current_trace_id()
         if trace_id:

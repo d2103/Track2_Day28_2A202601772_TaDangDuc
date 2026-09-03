@@ -187,6 +187,14 @@ services:
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: airflow:admin
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /workspace/.lab28/airflow/simple-auth-passwords.json
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      # LocalExecutor runs the scheduler, the triggerer, the dag-processor and
+      # every task as concurrent writers against one SQLite file. The pysqlite
+      # default is to give up after 5 seconds, and a lock error in the
+      # scheduler loop kills the scheduler outright - after which the DAG never
+      # runs and only the api-server is left answering. Waiting a minute for
+      # the write lock instead is what keeps a single-file metadata database
+      # usable at this concurrency.
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: sqlite:////opt/airflow/airflow.db?timeout=60
       AIRFLOW__CORE__PARALLELISM: "4"
       AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "4"
       AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "1"
@@ -209,7 +217,11 @@ services:
       qdrant:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/v2/monitor/health', timeout=3)"]
+      # The endpoint answers 200 even when the scheduler is dead, so the body
+      # is what decides. IP02's health signal in contracts/integration-matrix.yaml
+      # is "scheduler+triggerer healthy" - a container that reports healthy
+      # while nothing schedules is worse than no health check at all.
+      test: ["CMD", "python", "-c", "import json, sys, urllib.request; body = json.load(urllib.request.urlopen('http://127.0.0.1:8080/api/v2/monitor/health', timeout=5)); broken = sorted(name for name in ('metadatabase', 'scheduler', 'triggerer', 'dag_processor') if body.get(name, {}).get('status') != 'healthy'); sys.exit('unhealthy: ' + ', '.join(broken) if broken else 0)"]
       interval: 10s
       timeout: 5s
       retries: 60
@@ -244,7 +256,10 @@ services:
       otel-collector:
         condition: service_started
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      # Carries the synthetic-probe marker so Docker's own liveness polling
+      # stays out of lab28_requests_total, exactly like the gateway's cluster
+      # health check in gateway/envoy.yaml.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8000/health', headers={'x-lab28-synthetic-probe': 'container-healthcheck'}), timeout=2)"]
       interval: 5s
       timeout: 3s
       retries: 40

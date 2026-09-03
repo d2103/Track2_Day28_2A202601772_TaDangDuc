@@ -30,22 +30,37 @@ spec:
           ports:
             - name: http
               containerPort: 8000
+          # Every probe carries the synthetic-probe marker so kubelet polling
+          # stays out of lab28_requests_total; see gateway/envoy.yaml, which
+          # marks the gateway's cluster health check the same way.
           readinessProbe:
             httpGet:
               path: /ready
               port: http
+              httpHeaders:
+                - name: x-lab28-synthetic-probe
+                  value: kubelet-readiness
             periodSeconds: 10
             failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
               port: http
+              httpHeaders:
+                - name: x-lab28-synthetic-probe
+                  value: kubelet-liveness
             periodSeconds: 20
             failureThreshold: 3
+          # /startup, not /health: the question at start-up is whether settings
+          # parsed and the clients constructed, which /health deliberately does
+          # not answer.
           startupProbe:
             httpGet:
-              path: /health
+              path: /startup
               port: http
+              httpHeaders:
+                - name: x-lab28-synthetic-probe
+                  value: kubelet-startup
             periodSeconds: 5
             failureThreshold: 24
           resources:

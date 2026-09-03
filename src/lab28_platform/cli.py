@@ -197,6 +197,36 @@ def topics() -> None:
     _emit({"topics": results, "broker_topics": metadata["topics"]})
 
 
+def _post_with_backoff(
+    client: Any, path: str, payload: dict[str, Any], *, attempts: int = 6
+) -> tuple[Any, int]:
+    """POST once, retrying only while the gateway is rate-limiting us.
+
+    Returns the final response and how many 429s were waited out. Only 429 is
+    retried: a 4xx validation failure would return identically forever, and a
+    5xx is a dependency incident the operator has to see rather than a delay to
+    sit through. ``Retry-After`` is honoured when the gateway sends one, and the
+    fallback backoff starts above the limiter's one-second refill interval.
+    """
+    import time
+
+    delay = 1.1
+    waited = 0
+    for attempt in range(attempts):
+        response = client.post(path, json=payload)
+        if response.status_code != 429 or attempt == attempts - 1:
+            return response, waited
+        retry_after = response.headers.get("retry-after")
+        try:
+            pause = float(retry_after) if retry_after else delay
+        except ValueError:
+            pause = delay
+        time.sleep(pause)
+        waited += 1
+        delay = min(delay * 2, 8.0)
+    return response, waited
+
+
 @app.command()
 def seed(
     limit: Annotated[int, typer.Option(help="Maximum records of each kind to send.")] = 0,
@@ -209,6 +239,13 @@ def seed(
     Seeding goes over HTTP rather than straight to Kafka on purpose: the API is
     the only sanctioned producer, so seeding this way exercises validation, the
     idempotency key and the traceparent header exactly as a real client would.
+
+    That includes back-pressure. The gateway allows ten requests a second and
+    the corpus is larger than that, so a client that fires the whole corpus in
+    one burst gets a 429 for the tail of it. The rate limit is not the bug --
+    IP08 exists to prove it fires -- so the fix belongs on this side: honour the
+    limit, wait, and retry. Submissions are idempotent, so a retry of a request
+    that did land costs nothing.
     """
     import httpx
 
@@ -221,12 +258,14 @@ def seed(
 
     accepted: dict[str, list[dict[str, Any]]] = {}
     rejected: dict[str, list[dict[str, Any]]] = {}
+    throttled = 0
     with httpx.Client(base_url=base, timeout=15.0) as client:
         for kind, rows in batches.items():
             selected = rows[:limit] if limit else rows
             accepted[kind], rejected[kind] = [], []
             for row in selected:
-                response = client.post(f"/api/v1/{kind}", json=row)
+                response, waited = _post_with_backoff(client, f"/api/v1/{kind}", row)
+                throttled += waited
                 target = accepted if response.status_code == 202 else rejected
                 target[kind].append(
                     response.json()
@@ -234,6 +273,8 @@ def seed(
                     else {"status_code": response.status_code, "body": response.text[:200]}
                 )
             _note(f"{kind}: {len(accepted[kind])} accepted, {len(rejected[kind])} rejected")
+    if throttled:
+        _note(f"waited out {throttled} rate-limit response(s) from the gateway")
 
     _emit({"target": base, "accepted": accepted, "rejected": rejected})
     if any(rejected.values()):

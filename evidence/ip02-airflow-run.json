@@ -1,0 +1,48 @@
+{
+  "dag_id": "lab28_ingestion_pipeline",
+  "dag_run_id": "it-9ff0475f",
+  "state": "success",
+  "conf": {
+    "traceparent": "00-9365c2daa66a4f95ada34975935c4c45-df9314cecb3149d3-01"
+  },
+  "task_instances": [
+    {
+      "task_id": "drain_kafka_into_delta",
+      "state": "success",
+      "try_number": 1
+    },
+    {
+      "task_id": "refresh_online_features",
+      "state": "success",
+      "try_number": 1
+    },
+    {
+      "task_id": "index_new_documents",
+      "state": "success",
+      "try_number": 1
+    },
+    {
+      "task_id": "announce_processed_batch",
+      "state": "success",
+      "try_number": 1
+    }
+  ],
+  "asset_events": [
+    {
+      "uri": "lab28://delta/feedback",
+      "timestamp": "2026-09-03T12:10:03.011933Z"
+    },
+    {
+      "uri": "lab28://delta/documents",
+      "timestamp": "2026-09-03T12:10:03.152258Z"
+    },
+    {
+      "uri": "lab28://qdrant/lab28_documents",
+      "timestamp": "2026-09-03T12:10:27.375843Z"
+    },
+    {
+      "uri": "lab28://feast/asker_activity",
+      "timestamp": "2026-09-03T12:10:30.425654Z"
+    }
+  ]
+}

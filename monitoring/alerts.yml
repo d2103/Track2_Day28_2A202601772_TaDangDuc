@@ -1,21 +1,210 @@
+# Alerting for Lab 28.
+#
+# Two kinds of rule live here and they answer different questions.
+#
+# The SLO rules answer "are we spending the error budget faster than we can
+# afford". They are written as multi-window burn rates: the short window makes
+# the alert fast, the long window on the same rule stops a one-minute blip from
+# paging anyone. A single "error ratio above 5 percent" threshold cannot do both.
+#
+# The platform rules answer "which boundary broke". They name one dependency and
+# one owner, because an alert that only says "something is wrong" is an alert
+# somebody has to debug before they can act on it.
+#
+# Every alert carries a severity to route on and a description saying what to
+# look at next; integration-tests/test_prometheus_targets.py enforces both.
+
 groups:
-  - name: lab28-slo
+  # ---------------------------------------------------------------------
+  # SLO definitions, as recording rules.
+  #
+  # Stated targets for the serving path, over a 30-day window:
+  #   availability - 99% of /api/v1/ask requests do not return 5xx
+  #   latency      - 95% of /api/v1/ask requests finish inside the 1000 ms
+  #                  budget that pipeline.py measures every stage against
+  #
+  # Error budgets: 1% of requests, and 5% of requests respectively.
+  #
+  # Division is deliberately not guarded with clamp_min. On an idle stack the
+  # numerator and the denominator are both zero, the ratio is NaN, and every
+  # comparison against NaN is false - which is exactly right, because no traffic
+  # is not the same event as no errors. Padding the denominator with a constant
+  # would instead report a healthy ratio the platform never earned.
+  - name: lab28-slo-definitions
+    interval: 15s
+    rules:
+      - record: lab28_ask:availability:bad_ratio_5m
+        expr: |
+          sum(rate(lab28_requests_total{route="/api/v1/ask",status=~"5.."}[5m]))
+          / sum(rate(lab28_requests_total{route="/api/v1/ask"}[5m]))
+      - record: lab28_ask:availability:bad_ratio_30m
+        expr: |
+          sum(rate(lab28_requests_total{route="/api/v1/ask",status=~"5.."}[30m]))
+          / sum(rate(lab28_requests_total{route="/api/v1/ask"}[30m]))
+      - record: lab28_ask:availability:bad_ratio_1h
+        expr: |
+          sum(rate(lab28_requests_total{route="/api/v1/ask",status=~"5.."}[1h]))
+          / sum(rate(lab28_requests_total{route="/api/v1/ask"}[1h]))
+      - record: lab28_ask:availability:bad_ratio_6h
+        expr: |
+          sum(rate(lab28_requests_total{route="/api/v1/ask",status=~"5.."}[6h]))
+          / sum(rate(lab28_requests_total{route="/api/v1/ask"}[6h]))
+
+      # "Bad" for latency is a request that did not land in the le="1.0" bucket,
+      # so the SLI is read straight off the histogram instead of from a quantile
+      # estimate that would smear the boundary the budget is written against.
+      - record: lab28_ask:latency:bad_ratio_5m
+        expr: |
+          1 - (
+            sum(rate(lab28_request_seconds_bucket{route="/api/v1/ask",le="1.0"}[5m]))
+            / sum(rate(lab28_request_seconds_count{route="/api/v1/ask"}[5m]))
+          )
+      - record: lab28_ask:latency:bad_ratio_1h
+        expr: |
+          1 - (
+            sum(rate(lab28_request_seconds_bucket{route="/api/v1/ask",le="1.0"}[1h]))
+            / sum(rate(lab28_request_seconds_count{route="/api/v1/ask"}[1h]))
+          )
+
+  # ---------------------------------------------------------------------
+  # Error-budget burn.
+  #
+  # Multipliers follow the standard multi-window scheme: 14.4x burns 2% of a
+  # 30-day budget in one hour and pages; 6x burns 5% in six hours and files a
+  # ticket. The 24-hour and 3-day windows of the full scheme are deliberately
+  # left out - a lab stack does not run long enough to fill them, and a rule
+  # that can never have enough data is a rule nobody should trust.
+  - name: lab28-slo-burn
+    rules:
+      - alert: Lab28AskAvailabilityFastBurn
+        expr: |
+          lab28_ask:availability:bad_ratio_1h > (14.4 * 0.01)
+          and
+          lab28_ask:availability:bad_ratio_5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+          slo: ask-availability
+          owner: team-serving
+        annotations:
+          summary: /api/v1/ask is burning the availability budget 14.4x
+          description: >-
+            More than 14.4 percent of ask requests are failing over both the 1h
+            and the 5m window; at this rate the 30-day budget is gone in two
+            days. Read /ready for the failing dependency, then the trace id on a
+            failed response to find which boundary returned the 5xx.
+          runbook: runbooks/failure-injection.md
+
+      - alert: Lab28AskAvailabilitySlowBurn
+        expr: |
+          lab28_ask:availability:bad_ratio_6h > (6 * 0.01)
+          and
+          lab28_ask:availability:bad_ratio_30m > (6 * 0.01)
+        for: 15m
+        labels:
+          severity: warning
+          slo: ask-availability
+          owner: team-serving
+        annotations:
+          summary: /api/v1/ask is burning the availability budget 6x
+          description: >-
+            A sustained failure ratio above 6 percent over six hours. Not a page,
+            but the budget will not survive the month. Compare lab28_errors_total
+            by category against lab28_component_ready.
+
+      - alert: Lab28AskLatencyBudgetBurn
+        expr: |
+          lab28_ask:latency:bad_ratio_1h > (3 * 0.05)
+          and
+          lab28_ask:latency:bad_ratio_5m > (3 * 0.05)
+        for: 10m
+        labels:
+          severity: warning
+          slo: ask-latency
+          owner: team-serving
+        annotations:
+          summary: More than 15 percent of ask requests exceed the 1000 ms budget
+          description: >-
+            Burning the latency budget 3x. lab28_latency_budget_exceeded_total
+            names the component that went over its own stage budget - feature
+            lookup, retrieval, the inference call or the guardrails.
+
+  # ---------------------------------------------------------------------
+  # Availability of the platform itself.
+  - name: lab28-platform
     rules:
       - alert: Lab28ApiUnavailable
         expr: up{job="lab28-api"} == 0
         for: 30s
         labels:
           severity: critical
+          owner: team-platform
         annotations:
           summary: Lab 28 API is not being scraped
           description: Check the API container and its Kafka, Qdrant and MLflow dependencies.
-      - alert: Lab28HighErrorRatio
-        expr: >-
-          sum(rate(lab28_requests_total{status=~"5.."}[5m]))
-          / clamp_min(sum(rate(lab28_requests_total[5m])), 1) > 0.05
+
+      - alert: Lab28MandatoryDependencyDown
+        expr: min by (component) (lab28_component_ready{component=~"kafka|qdrant|mlflow"}) == 0
         for: 2m
         labels:
-          severity: warning
+          severity: critical
+          owner: team-platform
         annotations:
-          summary: More than 5 percent of Lab 28 requests are failing
-          description: Use the trace ID and readiness breakdown to identify the failing boundary.
+          summary: A mandatory dependency is failing its readiness probe
+          description: >-
+            A mandatory probe failure makes /ready return 503 and takes the pod
+            out of the gateway rotation. Run `uv run lab28 ready` and read the
+            probe detail before restarting anything.
+          runbook: runbooks/failure-injection.md
+
+      - alert: Lab28DependencyDegraded
+        expr: min by (component) (lab28_component_ready{component=~"feast|vllm"}) == 0
+        for: 10m
+        labels:
+          severity: warning
+          owner: team-serving
+        annotations:
+          summary: An optional dependency has been down for ten minutes
+          description: >-
+            Answers are still served, but on a degraded path - cold features, or
+            no inference endpoint. Expected while no real vLLM endpoint is
+            attached; anything else is an incident.
+
+      - alert: Lab28DeadLetterBacklogGrowing
+        expr: lab28_dead_letter_backlog > 0
+        for: 5m
+        labels:
+          severity: warning
+          owner: team-ingestion
+        annotations:
+          summary: Messages are sitting on data.raw.dlq
+          description: >-
+            Poison messages stopped blocking the partition, which is the design,
+            but nothing has replayed them. Inspect with `uv run lab28 dlq`, fix
+            the cause, and only then replay.
+
+      - alert: Lab28ConsumerLagGrowing
+        expr: sum(lab28_consumer_lag) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          owner: team-ingestion
+        annotations:
+          summary: The ingestion consumer is falling behind data.raw
+          description: >-
+            Offsets advance only after a durable Delta write, so sustained lag
+            means the MERGE side is slow or failing. Check the Airflow DAG run
+            and lab28_delta_merge_seconds.
+
+      - alert: Lab28TraceExportFailing
+        expr: rate(otelcol_exporter_send_failed_spans[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          owner: team-platform
+        annotations:
+          summary: The collector is dropping spans
+          description: >-
+            IP10 evidence is only as good as the export path. Compare
+            otelcol_receiver_accepted_spans with otelcol_exporter_sent_spans and
+            check the Jaeger endpoint in monitoring/otel-collector.yaml.

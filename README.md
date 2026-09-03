@@ -387,6 +387,15 @@ Theo [`docs/demo-runbook.md`](docs/demo-runbook.md), cá nhân hoặc nhóm trì
 File nộp và câu hỏi reflection được liệt kê trong
 [`SUBMISSION.md`](SUBMISSION.md).
 
+### Bài nộp của nhánh này
+
+| Mục trong `SUBMISSION.md` | Nằm ở |
+|---|---|
+| 1–2. Integration report + 10 file evidence | [`evidence/`](evidence/) |
+| 3. Sơ đồ kiến trúc và người phụ trách | [`docs/images/lab28-architecture-overview.png`](docs/images/lab28-architecture-overview.png), [`docs/team-role-cards.md`](docs/team-role-cards.md) |
+| 4–7. Happy path, sự cố/khôi phục, load profile, K8s/GitOps | [`docs/evidence-pack.md`](docs/evidence-pack.md) |
+| 8. Trade-off, production gap, đóng góp | [`ANSWERS.md`](ANSWERS.md) |
+
 ## Xử lý lỗi (Troubleshooting)
 
 | Triệu chứng | Nguyên nhân thường gặp | Cách kiểm tra/sửa |

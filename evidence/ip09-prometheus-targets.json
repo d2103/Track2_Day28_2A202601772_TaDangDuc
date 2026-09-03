@@ -1,0 +1,255 @@
+{
+  "targets": [
+    {
+      "job": "lab28-airflow-batch",
+      "url": "http://pushgateway:9091/metrics",
+      "health": "up",
+      "last_scrape": "2026-09-03T12:15:16.32195747Z",
+      "last_error": ""
+    },
+    {
+      "job": "lab28-api",
+      "url": "http://api:8000/metrics",
+      "health": "up",
+      "last_scrape": "2026-09-03T12:15:13.617361382Z",
+      "last_error": ""
+    },
+    {
+      "job": "lab28-collector",
+      "url": "http://otel-collector:8888/metrics",
+      "health": "up",
+      "last_scrape": "2026-09-03T12:15:15.270634959Z",
+      "last_error": ""
+    },
+    {
+      "job": "lab28-feast",
+      "url": "http://feast:8000/metrics",
+      "health": "up",
+      "last_scrape": "2026-09-03T12:15:14.847911174Z",
+      "last_error": ""
+    },
+    {
+      "job": "lab28-gateway",
+      "url": "http://gateway:9901/stats/prometheus",
+      "health": "up",
+      "last_scrape": "2026-09-03T12:15:14.702484149Z",
+      "last_error": ""
+    },
+    {
+      "job": "lab28-kafka",
+      "url": "http://kafka-exporter:9308/metrics",
+      "health": "up",
+      "last_scrape": "2026-09-03T12:15:14.087363834Z",
+      "last_error": ""
+    },
+    {
+      "job": "lab28-mlflow",
+      "url": "http://api:8000/metrics",
+      "health": "up",
+      "last_scrape": "2026-09-03T12:15:13.261797923Z",
+      "last_error": ""
+    },
+    {
+      "job": "lab28-prometheus",
+      "url": "http://prometheus:9090/metrics",
+      "health": "up",
+      "last_scrape": "2026-09-03T12:15:16.976223691Z",
+      "last_error": ""
+    },
+    {
+      "job": "lab28-qdrant",
+      "url": "http://qdrant:6333/metrics",
+      "health": "up",
+      "last_scrape": "2026-09-03T12:15:17.803657944Z",
+      "last_error": ""
+    },
+    {
+      "job": "lab28-vllm-optional",
+      "url": "http://host.docker.internal:8001/metrics",
+      "health": "down",
+      "last_scrape": "2026-09-03T12:15:16.515898251Z",
+      "last_error": "Get \"http://host.docker.internal:8001/metrics\": dial tcp 192.168.65.254:8001: connect: connection refused"
+    }
+  ],
+  "rules": [
+    {
+      "name": "Lab28ApiUnavailable",
+      "type": "alerting",
+      "health": "ok",
+      "duration": 30,
+      "labels": {
+        "owner": "team-platform",
+        "severity": "critical"
+      },
+      "annotations": {
+        "description": "Check the API container and its Kafka, Qdrant and MLflow dependencies.",
+        "summary": "Lab 28 API is not being scraped"
+      }
+    },
+    {
+      "name": "Lab28MandatoryDependencyDown",
+      "type": "alerting",
+      "health": "ok",
+      "duration": 120,
+      "labels": {
+        "owner": "team-platform",
+        "severity": "critical"
+      },
+      "annotations": {
+        "description": "A mandatory probe failure makes /ready return 503 and takes the pod out of the gateway rotation. Run `uv run lab28 ready` and read the probe detail before restarting anything.",
+        "runbook": "runbooks/failure-injection.md",
+        "summary": "A mandatory dependency is failing its readiness probe"
+      }
+    },
+    {
+      "name": "Lab28DependencyDegraded",
+      "type": "alerting",
+      "health": "ok",
+      "duration": 600,
+      "labels": {
+        "owner": "team-serving",
+        "severity": "warning"
+      },
+      "annotations": {
+        "description": "Answers are still served, but on a degraded path - cold features, or no inference endpoint. Expected while no real vLLM endpoint is attached; anything else is an incident.",
+        "summary": "An optional dependency has been down for ten minutes"
+      }
+    },
+    {
+      "name": "Lab28DeadLetterBacklogGrowing",
+      "type": "alerting",
+      "health": "ok",
+      "duration": 300,
+      "labels": {
+        "owner": "team-ingestion",
+        "severity": "warning"
+      },
+      "annotations": {
+        "description": "Poison messages stopped blocking the partition, which is the design, but nothing has replayed them. Inspect with `uv run lab28 dlq`, fix the cause, and only then replay.",
+        "summary": "Messages are sitting on data.raw.dlq"
+      }
+    },
+    {
+      "name": "Lab28ConsumerLagGrowing",
+      "type": "alerting",
+      "health": "ok",
+      "duration": 600,
+      "labels": {
+        "owner": "team-ingestion",
+        "severity": "warning"
+      },
+      "annotations": {
+        "description": "Offsets advance only after a durable Delta write, so sustained lag means the MERGE side is slow or failing. Check the Airflow DAG run and lab28_delta_merge_seconds.",
+        "summary": "The ingestion consumer is falling behind data.raw"
+      }
+    },
+    {
+      "name": "Lab28TraceExportFailing",
+      "type": "alerting",
+      "health": "ok",
+      "duration": 300,
+      "labels": {
+        "owner": "team-platform",
+        "severity": "warning"
+      },
+      "annotations": {
+        "description": "IP10 evidence is only as good as the export path. Compare otelcol_receiver_accepted_spans with otelcol_exporter_sent_spans and check the Jaeger endpoint in monitoring/otel-collector.yaml.",
+        "summary": "The collector is dropping spans"
+      }
+    },
+    {
+      "name": "Lab28AskAvailabilityFastBurn",
+      "type": "alerting",
+      "health": "ok",
+      "duration": 120,
+      "labels": {
+        "owner": "team-serving",
+        "severity": "critical",
+        "slo": "ask-availability"
+      },
+      "annotations": {
+        "description": "More than 14.4 percent of ask requests are failing over both the 1h and the 5m window; at this rate the 30-day budget is gone in two days. Read /ready for the failing dependency, then the trace id on a failed response to find which boundary returned the 5xx.",
+        "runbook": "runbooks/failure-injection.md",
+        "summary": "/api/v1/ask is burning the availability budget 14.4x"
+      }
+    },
+    {
+      "name": "Lab28AskAvailabilitySlowBurn",
+      "type": "alerting",
+      "health": "ok",
+      "duration": 900,
+      "labels": {
+        "owner": "team-serving",
+        "severity": "warning",
+        "slo": "ask-availability"
+      },
+      "annotations": {
+        "description": "A sustained failure ratio above 6 percent over six hours. Not a page, but the budget will not survive the month. Compare lab28_errors_total by category against lab28_component_ready.",
+        "summary": "/api/v1/ask is burning the availability budget 6x"
+      }
+    },
+    {
+      "name": "Lab28AskLatencyBudgetBurn",
+      "type": "alerting",
+      "health": "ok",
+      "duration": 600,
+      "labels": {
+        "owner": "team-serving",
+        "severity": "warning",
+        "slo": "ask-latency"
+      },
+      "annotations": {
+        "description": "Burning the latency budget 3x. lab28_latency_budget_exceeded_total names the component that went over its own stage budget - feature lookup, retrieval, the inference call or the guardrails.",
+        "summary": "More than 15 percent of ask requests exceed the 1000 ms budget"
+      }
+    },
+    {
+      "name": "lab28_ask:availability:bad_ratio_5m",
+      "type": "recording",
+      "health": "ok",
+      "duration": null,
+      "labels": {},
+      "annotations": null
+    },
+    {
+      "name": "lab28_ask:availability:bad_ratio_30m",
+      "type": "recording",
+      "health": "ok",
+      "duration": null,
+      "labels": {},
+      "annotations": null
+    },
+    {
+      "name": "lab28_ask:availability:bad_ratio_1h",
+      "type": "recording",
+      "health": "ok",
+      "duration": null,
+      "labels": {},
+      "annotations": null
+    },
+    {
+      "name": "lab28_ask:availability:bad_ratio_6h",
+      "type": "recording",
+      "health": "ok",
+      "duration": null,
+      "labels": {},
+      "annotations": null
+    },
+    {
+      "name": "lab28_ask:latency:bad_ratio_5m",
+      "type": "recording",
+      "health": "ok",
+      "duration": null,
+      "labels": {},
+      "annotations": null
+    },
+    {
+      "name": "lab28_ask:latency:bad_ratio_1h",
+      "type": "recording",
+      "health": "ok",
+      "duration": null,
+      "labels": {},
+      "annotations": null
+    }
+  ]
+}

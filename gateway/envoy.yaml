@@ -77,7 +77,16 @@ static_resources:
           # Liveness decides whether Envoy can route. Application readiness is
           # deliberately proxied so students can see the exact degraded
           # dependency report instead of an opaque "no healthy upstream".
-          http_health_check: {path: /health}
+          #
+          # The marker header lets the application tell this synthetic probe
+          # apart from real traffic. Without it every two seconds of health
+          # checking lands in lab28_requests_total{route="/health"} and hides
+          # whether a client ever reached that route.
+          http_health_check:
+            path: /health
+            request_headers_to_add:
+              - header: {key: x-lab28-synthetic-probe, value: gateway-health-check}
+                append_action: OVERWRITE_IF_EXISTS_OR_ADD
       common_lb_config:
         healthy_panic_threshold: {value: 0}
     - name: otel_collector
