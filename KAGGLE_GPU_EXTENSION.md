@@ -41,6 +41,47 @@ Kiểm tra endpoint trong cùng session:
 !curl -s http://127.0.0.1:8000/v1/models
 ```
 
+## Đưa endpoint ra ngoài Kaggle
+
+Notebook không có IP công khai, nên cần một tunnel. Cloudflare quick tunnel
+không cần tài khoản:
+
+```bash
+!wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared
+!chmod +x /usr/local/bin/cloudflared
+!cloudflared tunnel --url http://localhost:8000 --no-autoupdate
+```
+
+Lệnh này chặn cell (không tự kết thúc); URL in ra dạng
+`https://<random>.trycloudflare.com`. Trước khi dùng URL đó, tự kiểm tra đủ ba
+tín hiệu mà gate `gpu` yêu cầu — thiếu một là trượt:
+
+```bash
+u="https://<random>.trycloudflare.com"
+!curl -s {u}/health -o /dev/null -w "health=%{{http_code}}
+"
+!curl -s {u}/version; echo
+!curl -s {u}/metrics | grep -c "^vllm:"
+```
+
+`ports.template` và `compose.yaml` mặc định đọc vLLM ở
+`http://host.docker.internal:8001/v1`, và Prometheus scrape cùng địa chỉ đó
+(`monitoring/prometheus.yml`, job `lab28-vllm-optional`). Trỏ thẳng
+`LAB28_VLLM_BASE_URL` vào URL tunnel làm API gọi được, nhưng để Prometheus
+scrape một cổng 8001 chết — tunnel đổi hostname mỗi phiên nên không sửa được
+static config. Chạy cầu nối một chiều trên máy host để mọi thứ vẫn nói chuyện
+qua cổng 8001 như thiết kế:
+
+```bash
+uv run python scripts/vllm_local_forward.py https://<random>.trycloudflare.com
+```
+
+Giữ lệnh đó chạy nền, giữ nguyên `LAB28_VLLM_BASE_URL` ở giá trị mặc định
+(không override), rồi build lại container API.
+
+Session Kaggle ngắt sau khoảng 20 phút không tương tác; tunnel chết theo và
+phải lấy URL mới. Không commit URL tunnel hay token vào Git.
+
 ## Bài tập Operator
 
 Viết một adapter thay CPU classifier nhưng vẫn trả contract có output, model

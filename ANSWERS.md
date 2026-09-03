@@ -89,6 +89,7 @@ nhận traffic, nhưng xuất hiện khác biệt trên dashboard và trong
 | Ngân sách độ trễ | Vượt ngân sách **đếm metric**, không cắt request | Đuôi độ trễ dài vẫn lọt qua; đổi lại không cắt ngang một câu trả lời gần xong |
 | Rate limit | Local rate limit tại Envoy (10 rps/instance) | Không chính xác toàn cục khi scale nhiều instance; đổi lại không cần Redis và không có điểm chết mới |
 | Health tại gateway | `/healthz` là `direct_response` của Envoy | Không phản ánh sức khỏe ứng dụng — đúng chủ ý: liveness của gateway không được phụ thuộc upstream |
+| Active health check vào cluster | Kiểm `/ready` (không phải `/health`), timeout 5s | Ban đầu kiểm `/health` — không bao giờ eject pod khi dependency bắt buộc chết; ban đầu timeout 2s — quá chặt cho round trip tới GPU từ xa. Cả hai tìm ra khi có vLLM thật, xem `docs/evidence-pack.md` lỗi #7–#8 |
 | Promotion mô hình | Alias `champion` trong MLflow, không sửa code | Rollback là một thao tác registry (giây), không phải một lần deploy |
 | Cài đặt Python | `--no-editable` | Sửa code phải build lại image API; đổi lại hành vi giống nhau trên Windows/macOS/Linux |
 
@@ -108,7 +109,7 @@ limiter có bắn. Nên phần sửa nằm ở phía client: gặp 429 thì đ�
 chỉ 429 mới được thử lại (4xx khác sẽ lặp lại y hệt mãi mãi, 5xx là sự cố cần
 người nhìn thấy). Submission vốn idempotent nên thử lại không tốn gì.
 
-Danh sách đầy đủ sáu lỗi đã sửa ở
+Danh sách đầy đủ tám lỗi đã sửa ở
 [`docs/evidence-pack.md`](docs/evidence-pack.md) mục 1.
 
 ## 3. Khoảng cách so với production
@@ -166,12 +167,14 @@ Những điều đúng trong lab này nhưng **chưa đủ** để chạy thật
 
 | Gate | Trạng thái | Lý do |
 |---|---|---|
-| `gpu` (IP07 — vLLM thật) | **UNVERIFIED** | Máy chạy bài không có GPU NVIDIA và lớp chưa cấp endpoint vLLM. `probe_identity` báo `unreachable: ConnectError`, nên `lab28 ready` trả `not_ready` khi `LAB28_VLLM_REQUIRE_REAL=true`. Đúng theo thiết kế: một server chỉ tương thích OpenAI mà không chứng minh được `/version`, `/v1/models` và metric `vllm:` thì **không** được tính là đạt. Không dựng server giả. |
+| `gpu` (IP07 — vLLM thật) | **Đã xác minh** | Nối vLLM thật (Kaggle T4, `Qwen/Qwen3-4B-Instruct-2507`, qua Cloudflare tunnel) qua hai phiên (phiên đầu ngắt giữa chừng, nối lại phiên hai): `probe_identity().is_real_vllm == True`, `integration-report.json` lên `score: 100`, một `POST /api/v1/ask` thật trả 200 có model ID/trace ID/MLflow version, và **14/15 test `pytest -m gpu` pass**. Ba lỗi thật tìm thấy khi chạy bộ này lần đầu — health-check gateway hỏi sai route, Prometheus scrape cổng chết, timeout health-check quá chặt cho round trip xuyên Internet — đều đã sửa và xác nhận pass. 1 test còn lại là giới hạn kiến trúc không sửa được từ phía repo: cần vLLM tự phát span OTLP, mà vLLM chạy trên Kaggle không có đường tới collector cục bộ của ta. Chi tiết ở [`docs/evidence-pack.md`](docs/evidence-pack.md) mục 2.1 và 7.1. |
 | `langsmith` (chân LangSmith của IP10) | **UNVERIFIED** | Không có `LANGSMITH_API_KEY`. Chân OTLP cục bộ (collector → Jaeger) vẫn được kiểm và có bằng chứng ở `evidence/ip10-trace.json`. |
 
-Hai gate này được đánh dấu trong `contracts/integration-matrix.yaml` và loại
-khỏi lần chạy bằng `-m "not gpu and not langsmith"`, đúng như
-[`SUBMISSION.md`](SUBMISSION.md) hướng dẫn.
+Hai gate này được đánh dấu trong `contracts/integration-matrix.yaml`. Bộ test
+nhanh dùng `-m "not gpu and not langsmith"` đúng như
+[`SUBMISSION.md`](SUBMISSION.md) hướng dẫn; bộ `gpu` được chạy riêng khi có
+endpoint thật, không trộn vào lần chạy nhanh vì nó phụ thuộc một tài nguyên bên
+ngoài có thể mất bất cứ lúc nào — đúng như đã xảy ra.
 
 ## 5. Phân công và đóng góp
 
@@ -182,7 +185,7 @@ chia người:
 |---|---|---|
 | Ingestion & Orchestration | IP01–IP02 | Hoàn thiện `event_headers`; chạy `lab28 topics`, `seed`, DAG `lab28_ingestion_pipeline`; kiểm tra header trace trên `data.raw` |
 | Data & ML | IP03–IP04–IP06 | Hoàn thiện `dedupe_latest`, `feast_online_request`; xác minh MERGE idempotent, time travel, materialize Feast, alias `champion` và rollback |
-| Serving & Retrieval | IP05–IP07 | `lab28 index` với ID tất định; kiểm tra đường suy giảm; IP07 dừng ở `UNVERIFIED` có lý do |
+| Serving & Retrieval | IP05–IP07 | `lab28 index` với ID tất định; kiểm tra đường suy giảm; nối vLLM thật qua Kaggle T4, chạy happy path đầy đủ có mô hình |
 | Platform & Observability | IP08–IP10 | Sửa lỗi metric của health-check gateway; sửa healthcheck Airflow báo sai; thêm SLO burn-rate alert; kiểm tra 200/429 + `x-request-id`, target Prometheus, dashboard Grafana, độ phủ span |
 | Presenter / Incident Commander | — | Chạy hai kịch bản sự cố có ghi giả thuyết trước, đo load profile bốn cấu hình, viết `docs/evidence-pack.md` và tài liệu này |
 
